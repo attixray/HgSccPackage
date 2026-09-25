@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release-tag:
-        description: Publish this build as a release under this tag, v<manifest version> (leave empty for a normal run)
+        description: Publish this build as a release under this tag, v<manifest version>, with or without a trailing .0 (leave empty for a normal run)
         required: false
         default: ''
 
@@ -87,8 +87,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$TAG" != "v$VERSION" ]]; then
-            echo "::error::The tag $TAG does not match the manifest version $VERSION; expected v$VERSION."
+          # The manifest has four parts (1.2.3.0); the tag may drop a trailing .0 (v1.2.3).
+          if [[ "$TAG" != "v$VERSION" && "$TAG" != "v${VERSION%.0}" ]]; then
+            echo "::error::The tag $TAG does not match the manifest version $VERSION; expected v$VERSION or v${VERSION%.0}."
             exit 1
           fi
           target=()
@@ -103,7 +104,7 @@ jobs:
           fi
           sha256sum HgSccPackage.vsix > SHA256SUMS
           cat > notes.md <<NOTES
-          HgSccPackage $VERSION for Visual Studio 2017-2026. See the README for what changed in this fork.
+          HgSccPackage $VERSION for Visual Studio 2017-2026.
           NOTES
           gh release create "$TAG" "${target[@]}" --draft --title "HgSccPackage $VERSION" --notes-file notes.md
           gh release upload "$TAG" HgSccPackage.vsix SHA256SUMS
