@@ -1,5 +1,19 @@
 # Version history
 
+## 2.1.0
+
+The package loads in the background. It was a synchronous package with a
+synchronous auto-load, which Visual Studio no longer runs, and it started
+`hg version` and `hg showconfig` on the UI thread while it loaded.
+
+- The package is an `AsyncPackage` that allows background loading. Its
+  auto-load on the provider's UI context runs in the background.
+- It finds the mercurial version and extensions on a background thread. It
+  still offers its service, adds its menu commands and registers with the
+  source control manager on the main thread.
+- Becoming the active provider reuses that version, instead of starting
+  `hg version` again on the UI thread.
+
 ## 2.0.9
 
 Opening a solution with many projects and solution folders took about a minute.
