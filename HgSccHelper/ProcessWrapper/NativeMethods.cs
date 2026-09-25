@@ -40,6 +40,7 @@ namespace ProcessWrapper
 		public const int ERROR_PROC_NOT_FOUND = 127;
 		public const int ERROR_BAD_EXE_FORMAT = 193;
 		public const int ERROR_EXE_MACHINE_TYPE_MISMATCH = 216;
+		public const int ERROR_ACCESS_DENIED = 5;
 		public const int MAX_PATH = 260;
 
 		[StructLayout(LayoutKind.Sequential)]

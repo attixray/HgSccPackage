@@ -375,16 +375,105 @@ namespace HgSccHelper
 		//-----------------------------------------------------------------------------
 		public string Root(string work_dir)
 		{
-			string args = "root";
-			using (Process proc = Process.Start(PrepareProcess(work_dir, args)))
+			return FindRoot(work_dir, true);
+		}
+
+		//-----------------------------------------------------------------------------
+		private static readonly Dictionary<string, string> root_cache =
+			new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+		//-----------------------------------------------------------------------------
+		/// <summary>
+		/// Finds the root of the repository that contains a directory, as `hg root` does:
+		/// the nearest directory, going up, with a .hg directory in it. Returns an empty
+		/// string when there is none, or when the path is empty, relative or missing.
+		/// Running `hg root` for this costs a process start (a few hundred ms) per call,
+		/// and it is asked for every project and solution folder while a solution opens.
+		/// </summary>
+		public static string FindRoot(string work_dir, bool use_cache)
+		{
+			string dir = NormalizeDirectory(work_dir);
+			if (dir.Length == 0)
+				return string.Empty;
+
+			var visited = new List<string>();
+			string root = string.Empty;
+
+			for (var current = dir; current != null; current = Path.GetDirectoryName(current))
 			{
-				string root = proc.StandardOutput.ReadLine();
-				proc.WaitForExit();
-				if (proc.ExitCode != 0)
+				if (use_cache)
+				{
+					lock (root_cache)
+					{
+						string cached;
+						if (root_cache.TryGetValue(current, out cached))
+						{
+							root = cached;
+							break;
+						}
+					}
+				}
+
+				visited.Add(current);
+
+				if (Directory.Exists(Path.Combine(current, ".hg")))
+				{
+					root = current;
+					break;
+				}
+			}
+
+			lock (root_cache)
+			{
+				foreach (var visited_dir in visited)
+					root_cache[visited_dir] = root;
+			}
+
+			return root;
+		}
+
+		//-----------------------------------------------------------------------------
+		/// <summary>
+		/// Forgets the roots found so far, for repositories created or removed since.
+		/// </summary>
+		public static void ClearRootCache()
+		{
+			lock (root_cache)
+				root_cache.Clear();
+		}
+
+		//-----------------------------------------------------------------------------
+		private static string NormalizeDirectory(string path)
+		{
+			if (String.IsNullOrEmpty(path))
+				return string.Empty;
+
+			try
+			{
+				if (!Path.IsPathRooted(path))
 					return string.Empty;
 
-				return root;
+				var full = Path.GetFullPath(path);
+				var root = Path.GetPathRoot(full);
+				if (full.Length > root.Length)
+					full = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+				return Directory.Exists(full) ? full : string.Empty;
 			}
+			catch (ArgumentException)
+			{
+			}
+			catch (NotSupportedException)
+			{
+			}
+			catch (IOException)
+			{
+			}
+			catch (System.Security.SecurityException)
+			{
+			}
+
+			return string.Empty;
 		}
 
 		//-----------------------------------------------------------------------------
@@ -396,6 +485,7 @@ namespace HgSccHelper
 			using (Process proc = Process.Start(info))
 			{
 				proc.WaitForExit();
+				ClearRootCache();
 				if (proc.ExitCode != 0)
 					return false;
 

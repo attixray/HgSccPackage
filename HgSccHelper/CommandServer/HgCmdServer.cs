@@ -103,22 +103,36 @@ namespace HgSccHelper.CommandServer
 			msg.Channel = '\0';
 			msg.Length = 0;
 
-			msg.Channel = (char)Stdout.ReadByte();
-			uint b0 = (uint)Stdout.ReadByte();
-			uint b1 = (uint)Stdout.ReadByte();
-			uint b2 = (uint)Stdout.ReadByte();
-			uint b3 = (uint)Stdout.ReadByte();
-			msg.Length = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+			// A server that exited (or failed to start) gives end of stream: report that
+			// instead of reading -1 as a channel and a 4 GB length, or looping forever.
+			var header = new byte[5];
+			if (!ReadExactly(header, 0, header.Length))
+				return false;
+
+			msg.Channel = (char)header[0];
+			msg.Length = ((uint)header[1] << 24) | ((uint)header[2] << 16) | ((uint)header[3] << 8) | header[4];
 			msg.Reserve(msg.Length);
 
 			if (msg.IsInputChannel)
 				return true;
 
-			uint total_bytes = 0;
-			while (total_bytes != msg.Length)
+			return ReadExactly(msg.Data, 0, (int)msg.Length);
+		}
+
+		//-----------------------------------------------------------------------------
+		private bool ReadExactly(byte[] buffer, int offset, int count)
+		{
+			while (count > 0)
 			{
-				int bytes_read = Stdout.Read(msg.Data, (int)total_bytes, (int)(msg.Length - total_bytes));
-				total_bytes += (uint)bytes_read;
+				int bytes_read = Stdout.Read(buffer, offset, count);
+				if (bytes_read <= 0)
+				{
+					Logger.WriteLine("Command server output ended");
+					return false;
+				}
+
+				offset += bytes_read;
+				count -= bytes_read;
 			}
 
 			return true;

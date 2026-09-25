@@ -1,0 +1,110 @@
+name: Build VSIX
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: Publish this build as a release under this tag, v<manifest version> (leave empty for a normal run)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the version
+        id: version
+        run: |
+          [xml]$manifest = Get-Content HgSccPackage\source.extension.vsixmanifest
+          "version=$($manifest.PackageManifest.Metadata.Identity.Version)" >> $env:GITHUB_OUTPUT
+      - name: Find MSBuild and NuGet
+        # Use the MSBuild of the runner's Visual Studio and its NuGet CLI instead of
+        # setup actions; fetch nuget.exe only if the image has none.
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found' }
+          $nuget = (Get-Command nuget.exe -ErrorAction SilentlyContinue).Source
+          if (-not $nuget) {
+            $nuget = Join-Path $env:RUNNER_TEMP 'nuget.exe'
+            Invoke-WebRequest https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -OutFile $nuget
+          }
+          "MSBUILD=$msbuild" >> $env:GITHUB_ENV
+          "NUGET=$nuget" >> $env:GITHUB_ENV
+          & $msbuild -version -nologo
+      - name: Restore
+        # HgSccHelper uses packages.config (restored into packages\), HgSccPackage PackageReference.
+        run: |
+          & $env:NUGET restore HgSccPackage.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Release
+        run: |
+          & $env:MSBUILD HgSccPackage.sln -nologo "-p:Configuration=Release" "-p:Platform=Any CPU" -p:DeployExtension=false -v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Debug
+        # The Debug build defines LOG_ENABLED: it logs to %LOCALAPPDATA%\HgSccPackage\hgsccpkg.log.
+        run: |
+          & $env:MSBUILD HgSccPackage.sln -nologo "-p:Configuration=Debug" "-p:Platform=Any CPU" -p:DeployExtension=false -v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: HgSccPackage.vsix
+          path: HgSccPackage/bin/Release/HgSccPackage.vsix
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: HgSccPackage-logging.vsix
+          path: HgSccPackage/bin/Debug/HgSccPackage.vsix
+          if-no-files-found: error
+
+  release:
+    # A pushed tag v<version>, or a manual run with release-tag set, becomes a GitHub release
+    # with the VSIX, so it outlives the CI artifact. A manual run creates the tag on the commit
+    # it built if the tag does not exist yet.
+    if: github.ref_type == 'tag' || inputs.release-tag != ''
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: HgSccPackage.vsix
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release-tag || github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" != "v$VERSION" ]]; then
+            echo "::error::The tag $TAG does not match the manifest version $VERSION; expected v$VERSION."
+            exit 1
+          fi
+          target=()
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" > /dev/null 2>&1; then
+            commit=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+            if [[ "$commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::$TAG is on $commit, but this run built $GITHUB_SHA."
+              exit 1
+            fi
+          else
+            target=(--target "$GITHUB_SHA")
+          fi
+          sha256sum HgSccPackage.vsix > SHA256SUMS
+          cat > notes.md <<NOTES
+          HgSccPackage $VERSION for Visual Studio 2017-2026. See the README for what changed in this fork.
+          NOTES
+          gh release create "$TAG" "${target[@]}" --draft --title "HgSccPackage $VERSION" --notes-file notes.md
+          gh release upload "$TAG" HgSccPackage.vsix SHA256SUMS
+          gh release edit "$TAG" --draft=false

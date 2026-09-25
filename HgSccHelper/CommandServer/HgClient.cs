@@ -121,23 +121,36 @@ namespace HgSccHelper.CommandServer
 			Logger.WriteLine("Reading hello message");
 
 			var msg = new Message();
-			server.ReadChannel(ref msg);
-
-			if (msg.Channel != 'o')
+			if (!server.ReadChannel(ref msg))
+			{
+				Logger.WriteLine("Command server exited before its hello");
 				return false;
+			}
 
 			var hello_msg = Encoding.ASCII.GetString(msg.Data, 0, (int)msg.Length);
+			if (msg.Channel != 'o')
+			{
+				Logger.WriteLine("Command server answered on channel '{0}' instead of a hello: {1}", msg.Channel, hello_msg);
+				return false;
+			}
+
 			var hello_strings = hello_msg.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-			if (hello_strings.Length == 0)
-				return false;
-
 			const string caps_prefix = "capabilities: ";
+			if (hello_strings.Length == 0 || !hello_strings[0].StartsWith(caps_prefix))
+			{
+				Logger.WriteLine("Unexpected command server hello: {0}", hello_msg);
+				return false;
+			}
+
 			var	caps_list = hello_strings[0].Substring(caps_prefix.Length).Split(new[] {' '}, StringSplitOptions.RemoveEmptyEntries);
 			
 			capabilities = new List<string>(caps_list);
 			if (!capabilities.Contains("runcommand"))
+			{
+				Logger.WriteLine("Command server has no runcommand: {0}", hello_msg);
 				return false;
+			}
 
 			Logger.WriteLine("Hello message is ok");
 			return true;

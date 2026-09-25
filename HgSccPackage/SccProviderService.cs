@@ -77,6 +77,8 @@ namespace HgSccPackage
 
 		private readonly Dictionary<string, string> add_origin = new Dictionary<string, string>();
 		private readonly HashSet<string> outside_projects = new HashSet<string>();
+		// Repository roots whose storage failed to open; not tried again until the solution closes
+		private readonly HashSet<string> failed_roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
 		// Remember the base index where our custom scc glyph start
 		private uint customSccGlyphBaseIndex = 0;
@@ -325,6 +327,7 @@ namespace HgSccPackage
 			_active = true;
 			_sccProvider.OnActiveStateChange();
 
+			failed_roots.Clear();
 			Init();
 
 			if (!String.IsNullOrEmpty(_sccProvider.GetSolutionFileName()))
@@ -782,6 +785,57 @@ namespace HgSccPackage
 			return null;
 		}
 
+		//------------------------------------------------------------------
+		/// <summary>
+		/// Opens a storage for the repository that contains work_dir. While a solution opens,
+		/// every project asks for its repository: a repository whose storage failed to open is
+		/// not tried again until the solution is closed, and a directory outside any repository
+		/// costs no hg process.
+		/// </summary>
+		bool InitStorage(SccProviderStorage storage, string work_dir)
+		{
+			var root = Hg.FindRoot(work_dir, true);
+			if (root.Length == 0)
+				return false;
+
+			if (failed_roots.Contains(root))
+				return false;
+
+			if (storage.Init(work_dir, SccOpenProjectFlags.None) == SccErrors.Ok)
+				return true;
+
+			Logger.WriteLine("Could not open the repository {0}; not trying it again for this solution", root);
+			failed_roots.Add(root);
+			return false;
+		}
+
+		//------------------------------------------------------------------
+		/// <summary>
+		/// Returns the full, normalized path, or an empty string when the name is not a
+		/// rooted path (the name of a solution folder, for example).
+		/// </summary>
+		static string GetFullPath(string path)
+		{
+			if (String.IsNullOrEmpty(path))
+				return string.Empty;
+
+			try
+			{
+				return Path.IsPathRooted(path) ? Path.GetFullPath(path) : string.Empty;
+			}
+			catch (ArgumentException)
+			{
+			}
+			catch (NotSupportedException)
+			{
+			}
+			catch (IOException)
+			{
+			}
+
+			return string.Empty;
+		}
+
 		/// <summary>
 		/// One of the most important methods in a source control provider, is called by projects that are under source control when they are first opened to register project settings
 		/// </summary>
@@ -820,8 +874,7 @@ namespace HgSccPackage
 				// а также что у проекта нет репозитория
 				if (!storage.IsValid)
 				{
-					var err = storage.Init(work_dir, SccOpenProjectFlags.None);
-					if (err != SccErrors.Ok)
+					if (!InitStorage(storage, work_dir))
 						return VSConstants.E_FAIL;
 				}
 
@@ -843,7 +896,21 @@ namespace HgSccPackage
 				var hierProject = (IVsHierarchy)pscp2Project;
 				if (!project_to_storage_map.ContainsKey(hierProject))
 				{
-					var project_path = _sccProvider.GetProjectFileName(pscp2Project);
+					var project_name = _sccProvider.GetProjectFileName(pscp2Project);
+					var project_path = GetFullPath(project_name);
+					if (project_path.Length == 0)
+					{
+						// Solution folders have no file on disk, only a name like "Folder{GUID}.storage":
+						// they belong to the solution's repository. While the solution loads it has no
+						// storage yet; OnAfterOpenSolution registers the folders again after it.
+						var solution_storage = GetStorageForProject(null);
+						if (solution_storage == null)
+							return VSConstants.E_FAIL;
+
+						project_to_storage_map[hierProject] = solution_storage;
+						return VSConstants.S_OK;
+					}
+
 					var work_dir = Path.GetDirectoryName(project_path);
 
 //					Logger.WriteLine("RegisterSccProject: adding project = '{0}'", project_path);
@@ -856,8 +923,7 @@ namespace HgSccPackage
 
 					if (!storage.IsValid)
 					{
-						var err = storage.Init(work_dir, SccOpenProjectFlags.None);
-						if (err != SccErrors.Ok)
+						if (!InitStorage(storage, work_dir))
 							return VSConstants.E_FAIL;
 
 						var parent = GetStorageParentForFile(project_path);
@@ -868,7 +934,7 @@ namespace HgSccPackage
 					}
 
 					if (storage.GetFileStatus(project_path) == SourceControlStatus.scsUncontrolled)
-						outside_projects.Add(project_path);
+						outside_projects.Add(project_name);
 
 					if (Directory.Exists(project_path))
 						website_projects.Add(hierProject);
@@ -1032,6 +1098,8 @@ namespace HgSccPackage
 			storage_list.Clear();
 			_sccProvider.SolutionHaveSccBindings = false;
 			outside_projects.Clear();
+			failed_roots.Clear();
+			Hg.ClearRootCache();
 
 			return VSConstants.S_OK;
 		}
@@ -1093,12 +1161,12 @@ namespace HgSccPackage
 			if (!register_scc_projects)
 			{
 				var solution_dir = Path.GetDirectoryName(_sccProvider.GetSolutionFileName());
-				var storage = new SccProviderStorage();
 
 				// If solution is not controlled, check if there is
-				// a mercurial repository
+				// a mercurial repository. Opening a storage only to ask left its
+				// command server running.
 
-				if (SccErrors.Ok == storage.Init(solution_dir, SccOpenProjectFlags.None))
+				if (Hg.FindRoot(solution_dir, true).Length > 0)
 				{
 					Logger.WriteLine("Solution is not controlled, but there is a mercurial repository");
 					register_scc_projects = true;
@@ -1149,12 +1217,12 @@ namespace HgSccPackage
 			if (!register_scc_projects)
 			{
 				var solution_dir = Path.GetDirectoryName(_sccProvider.GetSolutionFileName());
-				var storage = new SccProviderStorage();
 
 				// If solution is not controlled, check if there is
-				// a mercurial repository
+				// a mercurial repository. Opening a storage only to ask left its
+				// command server running.
 
-				if (SccErrors.Ok == storage.Init(solution_dir, SccOpenProjectFlags.None))
+				if (Hg.FindRoot(solution_dir, true).Length > 0)
 				{
 					Logger.WriteLine("Solution is not controlled, but there is a mercurial repository");
 					register_scc_projects = true;

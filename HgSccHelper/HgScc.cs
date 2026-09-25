@@ -64,7 +64,10 @@ namespace HgSccHelper
 			Logger.WriteLine("OpenProject: {0}, flags {1}", local_proj_path, flags);
 
 			var hg = new Hg();
-			string root = hg.Root(local_proj_path);
+			// A repository may be about to be created here, or was cloned here just now:
+			// look again rather than trust a cached "no repository".
+			bool use_cache = (flags & SccOpenProjectFlags.CreateIfNew) != SccOpenProjectFlags.CreateIfNew;
+			string root = Hg.FindRoot(local_proj_path, use_cache);
 			bool is_root_exist = !String.IsNullOrEmpty(root);
 
 			if (!is_root_exist)
