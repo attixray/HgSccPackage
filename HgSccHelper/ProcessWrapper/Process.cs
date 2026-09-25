@@ -414,7 +414,22 @@ namespace ProcessWrapper
 			if (process_start_info.FileName.Length == 0)
 				throw new InvalidOperationException("FileNameMissing");
 
-			return StartWithCreateProcess(process_start_info);
+			try
+			{
+				return StartWithCreateProcess(process_start_info);
+			}
+			catch (Win32Exception ex)
+			{
+				// Visual Studio may itself run in a job that does not allow break-away,
+				// and then every hg start fails. Since Windows 8 a process can be in nested
+				// jobs, so start it inside that job instead.
+				if (!process_start_info.CreateBreakAwayFromJob || ex.NativeErrorCode != NativeMethods.ERROR_ACCESS_DENIED)
+					throw;
+
+				HgSccHelper.Logger.WriteLine("Break-away from job denied, starting inside the job: {0}", process_start_info.FileName);
+				process_start_info.CreateBreakAwayFromJob = false;
+				return StartWithCreateProcess(process_start_info);
+			}
 		}
 
 
