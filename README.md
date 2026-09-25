@@ -22,6 +22,8 @@ Prerequisites:
 
 The mercurial command line client (hg.exe) must be installed to use a HgSccPackage.
 
+The version history is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Builds
 
 The *Build VSIX* workflow builds two packages from every push:
