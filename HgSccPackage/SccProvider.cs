@@ -21,6 +21,7 @@ using System.Runtime.InteropServices;
 using System.ComponentModel.Design;
 using System.Threading;
 using Microsoft.Win32;
+using Task = System.Threading.Tasks.Task;
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.OLE.Interop;
 using Microsoft.VisualStudio;
@@ -37,7 +38,7 @@ namespace HgSccPackage
 	// SccProvider
 	// Declare that resources for the package are to be found in the managed assembly
 	// resources, and not in a satellite dll
-	[MsVsShell.PackageRegistration(UseManagedResourcesOnly = true)]
+	[MsVsShell.PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
 	// Register the resource ID of the CTMENU section (generated from compiling the VSCT file),
 	// so the IDE will know how to merge this package's menus with the rest of the IDE when
 	// "devenv /setup" is run.
@@ -49,18 +50,19 @@ namespace HgSccPackage
 	// Register the source control provider's service (implementing IVsScciProvider interface)
 	[MsVsShell.ProvideService(typeof (SccProviderService),
 		ServiceName = "Mercurial Source Control Provider Service")]
-	[MsVsShell.InstalledProductRegistration("#110", "#112", "2.0.9", IconResourceID = 400)]
+	[MsVsShell.InstalledProductRegistration("#110", "#112", "2.1.0", IconResourceID = 400)]
 	// Register the source control provider to be visible in Tools/Options/SourceControl/Plugin
 	// dropdown selector
 	[ProvideSourceControlProvider("Mercurial Source Control Package", "#100")]
-	// Pre-load the package when the command UI context is asserted (the provider will be automatically loaded after restarting the shell if it was active last time the shell was shutdown)
-	[MsVsShell.ProvideAutoLoad("A7F26CA1-0000-4729-896E-0BBE9E380635")]
+	// Pre-load the package when the command UI context is asserted (the provider will be automatically loaded after restarting the shell if it was active last time the shell was shutdown).
+	// The load runs in the background: Visual Studio no longer runs synchronous auto-loads.
+	[MsVsShell.ProvideAutoLoad("A7F26CA1-0000-4729-896E-0BBE9E380635", MsVsShell.PackageAutoLoadFlags.BackgroundLoad)]
 	// Register the key used for persisting solution properties, so the IDE will know to load the source control package when opening a controlled solution containing properties written by this package
 	[ProvideSolutionProps(_strSolutionPersistanceKey)]
 	//[MsVsShell.ProvideLoadKey("Standard", "1.0", "Mercurial Source Control Package", "Sergey Antonov", 104)]
 	// Declare the package guid
 	[Guid("A7F26CA1-2000-4729-896E-0BBE9E380635")]
-	public sealed class SccProvider : MsVsShell.Package,
+	public sealed class SccProvider : MsVsShell.AsyncPackage,
 									  IOleCommandTarget,
 									  IVsPersistSolutionProps
 		// We'll write properties in the solution file to track when solution is controlled; the interface needs to be implemented by the package object
@@ -101,14 +103,11 @@ namespace HgSccPackage
 				wnd.ShowDialog();
 			};
 
-
-			// Check for mercurial client befor updating extensions cache
-			HgVersionInfo ver = new HgVersion().VersionInfo("");
-			if (ver != null)
-			{
-				// Update a cache for enabled mercurial extensions
-				HgExtensionsCache.Instance.GetExtensions();
-			}
+			// The service only keeps a reference to the package here; it hooks into
+			// Visual Studio when the provider becomes active. Creating it now means
+			// the package never hands out a missing service. The mercurial client is
+			// checked in InitializeAsync, off the UI thread.
+			sccService = new SccProviderService(this);
 
 			// The provider implements the IVsPersistSolutionProps interface which is derived from IVsPersistSolutionOpts,
 			// The base class MsVsShell.Package also implements IVsPersistSolutionOpts, so we're overriding its functionality
@@ -148,19 +147,40 @@ namespace HgSccPackage
 		}
 
 		//------------------------------------------------------------------
-		protected override void Initialize()
+		/// <summary>
+		/// The version of the mercurial client, found while the package loaded;
+		/// null if it could not be found then.
+		/// </summary>
+		public HgVersionInfo FoundHgVersion { get; private set; }
+
+		//------------------------------------------------------------------
+		protected override async Task InitializeAsync(CancellationToken cancellationToken,
+			IProgress<MsVsShell.ServiceProgressData> progress)
 		{
-			Logger.WriteLine("Entering Initialize() of: {0}", this.ToString());
-			base.Initialize();
+			Logger.WriteLine("Entering InitializeAsync() of: {0}", this.ToString());
+			await base.InitializeAsync(cancellationToken, progress);
+
+			// Each of these starts an hg process: keep them off the UI thread.
+			await Task.Run(() =>
+			{
+				// Check for mercurial client befor updating extensions cache
+				FoundHgVersion = new HgVersion().VersionInfo("");
+				if (FoundHgVersion != null)
+				{
+					// Update a cache for enabled mercurial extensions
+					HgExtensionsCache.Instance.GetExtensions();
+				}
+			}, cancellationToken);
+
+			await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
 
 			// Proffer the source control service implemented by the provider
-			sccService = new SccProviderService(this);
 			((IServiceContainer) this).AddService(typeof (SccProviderService),
 												  sccService, true);
 
 			// Add our command handlers for menu (commands must exist in the .vsct file)
 			MsVsShell.OleMenuCommandService mcs =
-				GetService(typeof (IMenuCommandService)) as
+				await GetServiceAsync(typeof (IMenuCommandService)) as
 				MsVsShell.OleMenuCommandService;
 
 			if (mcs != null)
@@ -187,7 +207,7 @@ namespace HgSccPackage
 			// Register the provider with the source control manager
 			// If the package is to become active, this will also callback on OnActiveStateChange and the menu commands will be enabled
 			IVsRegisterScciProvider rscp =
-				(IVsRegisterScciProvider) GetService(typeof (IVsRegisterScciProvider));
+				(IVsRegisterScciProvider) await GetServiceAsync(typeof (IVsRegisterScciProvider));
 			rscp.RegisterSourceControlProvider(GuidList.guidSccProvider);
 		}
 

@@ -19,9 +19,12 @@ namespace HgSccPackage
 	class HgVersionChecker
 	{
 		//-----------------------------------------------------------------------------
-		public static bool CheckVersion(HgVersionInfo required_version)
+		public static bool CheckVersion(HgVersionInfo required_version, HgVersionInfo found_version)
 		{
-			HgVersionInfo found_version = new HgVersion().VersionInfo("");
+			// The package asks for the version while it loads, off the UI thread;
+			// ask hg again only if that found no client.
+			if (found_version == null)
+				found_version = new HgVersion().VersionInfo("");
 
 			if (found_version == null)
 			{

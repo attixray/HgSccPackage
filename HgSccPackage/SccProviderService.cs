@@ -321,7 +321,7 @@ namespace HgSccPackage
 			Logger.WriteLine("sln = '{0}'", _sccProvider.GetSolutionFileName());
 
 			var required_version = new HgVersionInfo {Release = 2, Major = 1, Minor = 1};
-			if (!HgVersionChecker.CheckVersion(required_version))
+			if (!HgVersionChecker.CheckVersion(required_version, _sccProvider.FoundHgVersion))
 				return VSConstants.E_FAIL;
 
 			_active = true;
